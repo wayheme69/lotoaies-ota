@@ -1,0 +1,28 @@
+name: Update La Primitiva results
+
+on:
+  schedule:
+    - cron: "17 */2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch latest results (SELAE via r.jina.ai)
+        run: python3 scripts/update_es.py
+      - name: Commit if changed
+        run: |
+          git config user.name "results-bot"
+          git config user.email "actions@github.com"
+          git add es_recent.json
+          if ! git diff --cached --quiet; then
+            git commit -m "results: $(date -u +%Y-%m-%dT%H:%MZ)"
+            git push
+          else
+            echo "No change."
+          fi
