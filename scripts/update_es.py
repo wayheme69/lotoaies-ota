@@ -17,6 +17,7 @@ import json
 import re
 import subprocess
 import sys
+import time
 from datetime import date, timedelta, datetime, timezone
 
 BASE = "https://www.loteriasyapuestas.es/servicios"
@@ -26,6 +27,10 @@ COMBO_RE = re.compile(
 
 
 def jina_get(url, tries=4):
+    """Ne considère comme succès qu'une LISTE JSON valide (les deux endpoints SELAE
+    renvoient des tableaux). Les enveloppes d'erreur jina (429…) arrivent en JSON
+    OBJET '{...}' : les accepter court-circuitait les retries (revue 28/07).
+    Backoff progressif pour laisser retomber le rate-limit."""
     for attempt in range(tries):
         r = subprocess.run(
             ["curl", "-s", "--max-time", "60",
@@ -33,9 +38,17 @@ def jina_get(url, tries=4):
              f"https://r.jina.ai/{url}"],
             capture_output=True, text=True, timeout=80)
         body = r.stdout.strip()
-        if body.startswith("[") or body.startswith("{"):
-            return json.loads(body)
-        print(f"  jina essai {attempt + 1}: réponse non-JSON ({body[:80]!r})", file=sys.stderr)
+        data = None
+        if body.startswith("["):
+            try:
+                data = json.loads(body)
+            except json.JSONDecodeError:
+                pass
+        if isinstance(data, list):
+            return data
+        print(f"  jina essai {attempt + 1}: réponse invalide ({body[:80]!r})", file=sys.stderr)
+        if attempt < tries - 1:
+            time.sleep(10 * (attempt + 1))
     raise SystemExit(f"jina: échec après {tries} essais pour {url}")
 
 
@@ -72,13 +85,15 @@ def fetch_recent(days=45):
 
 
 def fetch_next():
+    # ÉCHEC BRUYANT ici aussi (revue 28/07) : un raté silencieux publiait un flux
+    # SANS 'next' (date + bote perdus) pendant 2 h au lieu de garder l'ancien.
     rows = jina_get(f"{BASE}/proximosv3?game_id=LAPR&num=1")
-    if not isinstance(rows, list) or not rows:
-        return None
+    if not rows:
+        raise SystemExit("proximosv3: réponse vide")
     row = rows[0]
     d = str(row.get("fecha", ""))[:10]
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d):
-        return None
+        raise SystemExit(f"proximosv3: fecha illisible: {row.get('fecha')!r}")
     out = {"date": d}
     bote = row.get("premio_bote")
     if bote and str(bote).isdigit() and int(bote) > 0:
@@ -88,12 +103,21 @@ def fetch_next():
 
 draws = fetch_recent()
 nxt = fetch_next()
-payload = {
-    "updated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-    "draws": draws,
-}
-if nxt:
-    payload["next"] = nxt
+
+# No-op réel quand rien n'a changé (hors horodatage) : sinon le garde
+# « commit if changed » du workflow ne se déclenchait JAMAIS (revue 28/07).
+content = {"draws": draws, "next": nxt}
+try:
+    with open("es_recent.json") as f:
+        old = json.load(f)
+except (OSError, ValueError):
+    old = {}
+old.pop("updated", None)
+if old == content:
+    print("Aucune nouvelle donnée — es_recent.json inchangé.", file=sys.stderr)
+    raise SystemExit(0)
+
+payload = {"updated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), **content}
 with open("es_recent.json", "w") as f:
     json.dump(payload, f, ensure_ascii=False, indent=1)
 print(f"OK: {len(draws)} tirages, dernier {draws[0]['date']} {draws[0]['numbers']} "

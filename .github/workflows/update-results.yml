@@ -22,6 +22,7 @@ jobs:
           git add es_recent.json
           if ! git diff --cached --quiet; then
             git commit -m "results: $(date -u +%Y-%m-%dT%H:%MZ)"
+            git pull --rebase origin main
             git push
           else
             echo "No change."
