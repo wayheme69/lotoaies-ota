@@ -13,13 +13,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # v3 app feed (Primitiva numbers) — must never be broken
       - name: Fetch latest results (SELAE via r.jina.ai)
         run: python3 scripts/update_es.py
+      # v4 app feed (Primitiva + Euromillones with the real prizes in Spain)
+      - name: Fetch results with prizes (v4)
+        run: python3 scripts/es_results.py
       - name: Commit if changed
         run: |
           git config user.name "results-bot"
           git config user.email "actions@github.com"
-          git add es_recent.json
+          git add es_recent.json es_results.json
           if ! git diff --cached --quiet; then
             git commit -m "results: $(date -u +%Y-%m-%dT%H:%MZ)"
             git pull --rebase origin main
